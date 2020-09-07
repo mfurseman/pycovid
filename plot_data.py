@@ -2,7 +2,11 @@
 
 import sys
 import math
+import datetime
 import numpy as np
+import scipy as sp
+import scipy.signal
+import scipy.signal.windows
 import pandas as pd
 
 from cycler import cycler
@@ -10,7 +14,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-import labelling
+# import labelling
 
 
 COUNTRIES_TO_PLOT = [
@@ -29,6 +33,13 @@ DATA_FILES = {
     'deceased': 'data/time_series_covid19_deaths_global.csv',
     'recovered': 'data/time_series_covid19_recovered_global.csv',
 }
+
+
+class PlotParams(object):
+    def __init__(self, data=None, label=None, axis_methods=[]):
+        self.data = data
+        self.label = label
+        self.axis_methods = axis_methods
 
 
 def moving_average(data_set, period=3):
@@ -64,75 +75,100 @@ def add_case_threshold(df, threshold):
             .astype('timedelta64[D]'))
 
 
-def plot_helper(ax, x_lim, dataset_1, dataset_2, alpha=1.0, label=""):
-    dataset_1.plot(ax=ax, linewidth=3,)
-    ax.set_prop_cycle(None)  # Reset colours
-    dataset_2.plot(ax=ax, linewidth=3, linestyle='--', legend=False, alpha=alpha)
-    ax.set_ylabel(label)
-    ax.grid(True, which='both', alpha=0.1)
-    ax.set_xlim(0, x_lim)
+def plot_from_params(plot_params):
+    fig, axes = plt.subplots(*plot_params.shape, sharex=True, figsize=(10,20))  # sharex=True
+    for params, axis in zip(plot_params.flatten(), axes.flatten()):
+        params.data.plot(ax=axis, legend=False)
+        axis.set_ylabel(params.label)
+        for meth in params.axis_methods:
+            meth(axis)
+    axes.flatten()[0].legend()  # Only first plot has legend
+    fig.subplots_adjust(wspace=0.0, hspace=0.0, left=0.10, right=0.90, top=0.99, bottom=0.03)
+    return fig, axes
 
 
 x_lim = None
-threshold = 100
 df = create_dataframe(DATA_FILES)
-add_case_threshold(df, threshold)
 
-dfp = df
+case_threshold = 100
+relative_dates = False
+dfp = df.copy()
 dfp = dfp[df['Country/Region'].str.contains('|'.join(COUNTRIES_TO_PLOT))]
-dfp = dfp.set_index('days:100')
-dfp = dfp.drop('date', axis=1)
-dfp = dfp.pivot(columns='Country/Region')
-dfp = dfp[dfp.index >= np.timedelta64(0)]
-dfp.index = dfp.index.astype('timedelta64[D]')
+if relative_dates:
+    add_case_threshold(dfp, case_threshold)
+    dfp = dfp.set_index('days:{}'.format(case_threshold))
+    dfp = dfp.drop('date', axis=1)
+    dfp = dfp.pivot(columns='Country/Region')
+    dfp = dfp[dfp.index >= np.timedelta64(0)]
+    dfp.index = dfp.index.astype('timedelta64[D]')
+if not relative_dates:
+    dfp = dfp.set_index('date')
+    dfp = dfp.pivot(columns='Country/Region')
 
 
-sns.set()
-# sns.set_style('darkgrid')
 plt.style.use(['dark_background'])
-sns.set_palette("tab10",plt.cm.tab10.N )
+sns.set_palette("tab10",plt.cm.tab10.N)
 
-fig, (ax1, ax2, ax3, ax4, ax5, ax6) = plt.subplots(6, 1, sharex=True, figsize=(10,20))
-plt.subplots_adjust(wspace=0, hspace=0, left=0.08, right=0.99, top=0.99, bottom=0.03)
+#confirmed_cutoff =  (dfp['confirmed']>float(case_threshold)).any(axis=1).shift(-1, fill_value=True)
+plots = np.array([
+    [
+    PlotParams(
+        data=dfp['confirmed'].rolling(7, center=True).mean(),
+        label=r'$ N(t) $',
+        axis_methods=[
+            lambda x: x.set_yscale('log'),
+            lambda x: x.grid(which='major', alpha=0.25),
+            lambda x: x.grid(which='minor', alpha=0.10),
+        ]),
+    PlotParams(
+        data=dfp['confirmed'].rolling(7, center=True).mean().diff(),
+        label=r'$ \frac{dN(t)}{dt} $',
+        axis_methods=[
+            lambda x: x.set_yscale('log'),
+            lambda x: x.grid(which='major', alpha=0.25),
+            lambda x: x.grid(which='minor', alpha=0.10),
+        ]),
+    PlotParams(
+        data=dfp['confirmed'].rolling(7, center=True).mean().rolling(21, center=True, win_type='triang').mean().diff().diff(),
+        label=r'$ \frac{d^2N(t)}{dt^2} $',
+        axis_methods=[
+            lambda x: x.set_yscale('symlog', linthreshy=10),
+            lambda x: x.grid(which='major', alpha=0.25),
+            lambda x: x.grid(which='minor', alpha=0.10),
+        ]),
+    ], [
+    PlotParams(
+        data=dfp['deceased'].rolling(7, center=True).mean(), 
+        label=r'$ N(t) $',
+        axis_methods=[
+            lambda x: x.set_yscale('log'),
+            lambda x: x.grid(which='major', alpha=0.25),
+            lambda x: x.grid(which='minor', alpha=0.10),
+            lambda x: x.yaxis.set_label_position("right"),
+            lambda x: x.yaxis.tick_right(),
+        ]),
+    PlotParams(
+        data=dfp['deceased'].rolling(7, center=True).mean().diff(),
+        label=r'$ \frac{dN(t)}{dt} $',
+        axis_methods=[
+            lambda x: x.set_yscale('log'),
+            lambda x: x.grid(which='major', alpha=0.25),
+            lambda x: x.grid(which='minor', alpha=0.10),
+            lambda x: x.yaxis.set_label_position("right"),
+            lambda x: x.yaxis.tick_right(),
+        ]),
+    PlotParams(
+        data=dfp['deceased'].rolling(7, center=True).mean().rolling(21, center=True, win_type='triang').mean().diff().diff(),
+        label=r'$ \frac{d^2N(t)}{dt^2} $',
+        axis_methods=[
+            lambda x: x.set_yscale('symlog', linthreshy=10),
+            lambda x: x.grid(which='major', alpha=0.25),
+            lambda x: x.grid(which='minor', alpha=0.10),
+            lambda x: x.yaxis.set_label_position("right"),
+            lambda x: x.yaxis.tick_right(),
+        ]),
+    ],
+]).transpose()
 
-plot_helper(ax1, x_lim, 
-    dfp['confirmed'],
-    dfp['deceased'],
-    label=r'Confirmed / Deceased Cumulative Cases     $\left [ C(t) = R_o^t \right ]$')
-ax1.set_yscale('log')
-ax1.set_ylim(100, 1E5)
-ax1.xaxis.set_major_locator(plt.MultipleLocator(1))
-
-plot_helper(ax2, x_lim,
-    dfp['confirmed'].apply(np.gradient),
-    dfp['deceased'].apply(np.gradient),
-    label=r'Confirmed / Deceased Daily Cases      $\left [ \frac{dC(t)}{dt} = t R_0^t \right ]$')
-ax2.set_yscale('log')
-
-plot_helper(ax3, x_lim,
-    100 * dfp['confirmed'].pct_change(limit=1).apply(moving_average, period=5),
-    100 * dfp['confirmed'].pct_change(limit=1),
-    alpha=0.5, label="Day on Day %")
-
-plot_helper(ax4, x_lim,
-    dfp['confirmed'].apply(lambda x: np.exp(moving_average(np.gradient(np.log(x)), period=5))),
-    dfp['confirmed'].apply(lambda x: np.exp(np.gradient(np.log(x)))),
-    alpha=0.5, 
-    label=r'Growth rate, five point moving averge (confirmed)     $\left [ R_0 = \frac{d ln(C(t))}{dt} \right ]$')
-
-plot_helper(ax5, x_lim,
-    dfp['deceased'].apply(lambda x: np.exp(moving_average(np.gradient(np.log(x)), period=5))),
-    dfp['deceased'].apply(lambda x: np.exp(np.gradient(np.log(x)))),
-    alpha=0.5, 
-    label=r'Growth rate, five point moving averge (deceased)     $\left [ R_0 = \frac{d ln(C(t))}{dt} \right ]$')
-
-plot_helper(ax6, x_lim,
-    dfp['confirmed'].apply(lambda x: np.gradient(np.exp(moving_average(np.gradient(np.log(x)), period=5)))),
-    dfp['confirmed'].apply(lambda x: np.gradient(np.exp(np.gradient(np.log(x))))),
-    alpha=0.5, 
-    label=r'Gradient of growth rate (confirmed)     $\left [ \frac{dR_0}{dt} = \frac{d^2 ln(C(t))}{dt^2} \right ]$')
-ax6.set_yscale('symlog', basey=10, linthreshy=0.01, subsy=range(100))
-ax6.set_xlabel("Days since 100 cases")
-
-
+fig, axs = plot_from_params(plots)
 plt.show()
